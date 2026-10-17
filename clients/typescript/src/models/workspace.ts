@@ -43,7 +43,8 @@ export interface GitDiff {
 export interface ExecuteBashRequest {
   command: string;
   cwd?: string;
-  timeout?: number;
+  /** Seconds before the server kills the command; null runs it until it exits or is stopped. */
+  timeout?: number | null;
 }
 
 export interface BashEventBase {
