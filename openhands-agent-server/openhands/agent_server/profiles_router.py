@@ -33,6 +33,7 @@ from openhands.sdk.llm.exceptions import (
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     ProfileLimitExceeded,
+    canonical_profile_name,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
@@ -134,11 +135,17 @@ def _set_active_profile_if_matches(
     config = get_config(request)
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
-    if settings.active_profile != old_name:
+    active = settings.active_profile
+    # ``foo.json`` addresses profile ``foo`` in the store, so compare store keys.
+    if active is None or canonical_profile_name(active) != canonical_profile_name(
+        old_name
+    ):
         return False
 
     def update_active(settings: PersistedSettings) -> PersistedSettings:
-        settings.active_profile = new_name
+        settings.active_profile = (
+            canonical_profile_name(new_name) if new_name is not None else None
+        )
         return settings
 
     settings_store.update(update_active)
@@ -335,6 +342,11 @@ async def validate_profile(
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
+    # Check a draft linked to a provider connection with the connection's
+    # credentials, as activation and ``switch_llm`` run it. No-op without
+    # ``provider_connection_id``; a dangling link is a 422 naming it.
+    with store_errors():
+        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
 
     messages = [
         Message(
@@ -525,7 +537,7 @@ async def activate_profile(
                 update={"llm": llm}
             )
             llm_applied = True
-        settings.active_profile = name
+        settings.active_profile = canonical_profile_name(name)
         return settings
 
     try:
@@ -537,7 +549,11 @@ async def activate_profile(
         logger.error(f"Failed to activate profile: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            detail=(
+                "Settings file is corrupted or encrypted with a different key: "
+                "restore that key as OH_SECRET_KEY or add it to "
+                "OH_PREVIOUS_SECRET_KEYS"
+            ),
         )
 
     logger.info(f"Activated profile '{name}'")
